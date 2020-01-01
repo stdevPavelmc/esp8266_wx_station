@@ -1,6 +1,6 @@
 # DIY meteo station
 
-For fun and learn, it uses a ESP8266 (NodeMCU) and a ProMini arduinos linked via I2C, the code for the ProMini is on the [ProMini_wx_station](https://github.com/stdevPavelmc/promini_wx_station)
+For fun and learn, it uses a ESP8266 (NodeMCU) and a ProMini arduinos linked via I2C, the code for the ProMini is on the [ProMini_wx_station](https://github.com/stdevPavelmc/promini_wx_station) repo
 
 This is an early stage and design is evolving...
 
