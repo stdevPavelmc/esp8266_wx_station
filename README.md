@@ -6,4 +6,4 @@ This is an early stage and design is evolving...
 
 ## NOTE
 
-This project is built with Platformio, this is de contents of the src folder in the project, if you use arduino simply change the extension to .ino and remode the include for <Arduino.h> on top of the code.
+This project is a Platformio one, if you use arduino simply copy the files in the `src` folder and change the extensions to .ino and remove the `#include <Arduino.h>` on top of the main.cpp.
