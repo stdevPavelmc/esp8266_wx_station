@@ -10,22 +10,57 @@
 
 // Arduino
 #include <Arduino.h>
-#define VERSION					"v0.1.6"		// version
-#define WIFI_SSID       "Opi"				// Wifi user
+#define VERSION			"v0.3.0"	// version
+#define WIFI_SSID       "Opi"		// Wifi user
 #define WIFI_PASS       "Xilantro"	// Wifi passwd
 #define INFLUXDB_HOST   "10.42.1.1"	// influx server
-#define INFLUXDB_DBNAME "test"			// name of the influxdb database to insert data 
+#define INFLUXDB_DBNAME "test"		// name of the influxdb database to insert data
 
 // Wifi related functions
 #include <ESP8266WiFi.h>
 #include <WiFiClient.h>
 
+// instantiate the wificlient
+WiFiClient client;
+
 // WIFI static IP settings
 IPAddress staticIP(10, 42, 1, 2);		// ESP8266 static ip
 IPAddress gateway(10, 42, 1, 1);		//IP Address of your WiFi Router (Gateway)
 IPAddress subnet(255, 255, 255, 0); //Subnet mask
-IPAddress dns(10, 42, 1, 1);				//DNS
-const char* host = "meteo";					
+const char* host = "meteo";
+
+/******* Web listen trick
+ * 
+ * We use a trick to sleep between data send to save power
+ * But we need also a trick to enable the web server and allow
+ * for upgrades via wifi (OTA)
+ * 
+ * The trick is simple: 
+ * it will check for a wakehost connection tcp 8266 port
+ * if it's open it will send "OK" to it and will arm a
+ * X minute timer for the web server and upload options
+ * after that it will resume to sleep between data send
+ * 
+ * How to manage that? on linux is as simple as 
+ * 
+ * nc -k4l 8266
+ * 
+ * The k parameter is to keep it open, omit it to
+ * trigger it just once like this
+ * 
+ * nc -4l 8266
+ * 
+ * Also after you has activated the timer if you keep the web
+ * open it will keep rearming the timereach 30 seconds.
+ * 
+ * This can be also accomplished by opening the web on the 30 seconds
+ * following a restart of the MCU
+ ***************************************************************/
+const char* wakeHost = "10.42.1.1";
+int wakeHostPort = 8266;
+#define WAKE_TIMER 3	// minutes
+unsigned long wakeExpireAt = millis();
+bool wifiOn = false;	// wifi state
 
 // OTA related configs
 #include <ESP8266WebServer.h>
@@ -103,22 +138,48 @@ int Lightnings = 0;
 int WindSpeed = 0;
 float RainAmount = 0;
 
-/* enum PerceptionState {
-Perception_Dry = 0,
-Perception_VeryComfy = 1,
-Perception_Comfy = 2,
-Perception_Ok = 3,
-Perception_UnComfy = 4,
-Perception_QuiteUnComfy = 5,
-Perception_VeryUnComfy = 6,
-Perception_SevereUncomfy = 7
-*/
-
 // internal vars
-unsigned long lastmillis = millis();
-# define INTERVAL 30
+#define INTERVAL 60
+#define DAY49 4233600000UL
+unsigned long lastTime = millis();
 
 /*****************************************************************/
+
+String strConfort(int cfindex) {
+	String result = "";
+	switch (cfindex)	{
+	case 0:
+		result = "Dry";
+		break;
+	case 1:
+		result = "Very Comfortable";
+		break;
+	case 2:
+		result = "Comfortable";
+		break;
+	case 3:
+		result = "Ok";
+		break;
+	case 4:
+		result = "Uncomfortable";
+		break;
+	case 5:
+		result = "Quite uncomfortable";
+		break;
+	case 6:
+		result = "Very uncomfortable";
+		break;
+	case 7:
+		result = "Severe uncomfortable";
+		break;
+
+	default:
+		result = "Unknow";
+		break;
+	}
+
+	return result;
+}
 
 void bmp180Read() {
 	int status;
@@ -158,10 +219,9 @@ void bmp180Read() {
 				// Function returns 1 if successful, 0 if failure.
 				status = bmp.getPressure(P,T);
 				if (status != 0) {
-
 					// set the external vars
 					bmpPress = P / 10;
-					bmpTemp = T - 4.10;	// correction based on my alcohol thermometer
+					bmpTemp = T;
 				}
 			}
 		}
@@ -204,8 +264,8 @@ float calcCurrent(int val) {
 void updateValuesFromArduino() {
 	// update ADC values (volt scale is applied before percent to increase accuracy)
 	batteryV = percent(battery * V5) * VOLTSCALE;
-	lm35Temp = (percent(lm35 * V5 ) / 0.01) + 1.30; // << direct temp conversion + correction
-	windDir = 0; // TODO use BMUX to set the values
+	lm35Temp = percent(lm35 * V5) / 0.01;
+	windDir = 0;
 	batteryCurrent = calcCurrent(current);
 
 	// non ADc values
@@ -265,12 +325,6 @@ void takeSamples() {
 	getI2CData();
 }
 
-void measure() {
-	// wrapper of the get remote & process local
-	getI2CData();
-	takeSamples();
-}
-
 InfluxData measure(char* rowName, float val, char *device, char *sensor, char *place, char *comm) {
 	InfluxData row(rowName);
 	row.addTag("device", device);
@@ -319,10 +373,17 @@ void infxSendData() {
 	InfluxData mB = measure("rainAmount", RainAmount, "WX_stat", "RainAmount", "Techo", "real");
 	influx.prepare(mB);
 
+	InfluxData mC = measure("temperature", dhtDewPoint, "WX_stat", "DHT11", "Techo", "DewPoint");
+	influx.prepare(mC);
+
+	InfluxData mD = measure("confortRatio", dhtComfort, "WX_stat", "ConfortRatio", "Techo", "real");
+	influx.prepare(mD);
+
 	// actual write
 	influx.write();
 }
 
+#ifdef DEBUG
 void serialDebug() {
 	static byte pcount = 11;
 	
@@ -356,27 +417,61 @@ void serialDebug() {
 	Serial.print("\t\t");
 	Serial.println(Lightnings);
 }
+#endif
+
+char *uptime() {
+	unsigned long milli = millis();
+	static char _return[32];
+	unsigned long secs = milli / 1000, mins = secs / 60;
+	unsigned int hours = mins / 60, days = hours / 24;
+	milli -= secs * 1000;
+	secs -= mins * 60;
+	mins -= hours * 60;
+	hours -= days * 24;
+	sprintf(_return,"Uptime %d days %2.2d:%2.2d:%2.2d.%3.3d", (byte)days, (byte)hours, (byte)mins, (byte)secs, (int)milli);
+	return _return;
+}
+
+void wakeArm() {
+	// arm the timer for the wake
+	wakeExpireAt = millis() + WAKE_TIMER * 1000 * 60;	// WAKE_TIMER minutes
+
+	#ifdef DEBUG
+	Serial.println("Wake trigger armed!");
+	#endif // DEBUG
+}
 
 void handleIndex() {
+	// String table helpers
+	const String RowStart = "<tr><td><p align='right'><b>";
+	const String RowMiddle = "</b></p></td><td><p align='left'>";
+	const String RowEnd = "</p></td></tr>";
 	// craft the index page
 	String HTML = htmlHeadRefresh;
-	HTML += "<h1>Condiciones meteo Ahora</h1><hr><br/>";
-	HTML += "<table><tr><td>Temp:</td><td>";
-	HTML += lm35Temp;
-	HTML += " Celcius</td></tr>";
-	HTML += "<tr><td>Hum:</td><td>";
-	HTML += dhtHum;
-	HTML += " H</td></tr>";
-	HTML += "<tr><td>Press:</td><td>";
-	HTML += bmpPress;
-	HTML += " hPa</td></tr>";
+	HTML += "<div align='center'>";
+	HTML += "<h1>Actual WX Conditions</h1><hr><br/>";
+	HTML += "<p align='center'>"+ String(uptime()) + "</p>";
+	HTML += "<table>";
+	HTML += RowStart + "Temperature:" + RowMiddle + String(lm35Temp) + " Celcius." + RowEnd;
+	HTML += RowStart + "Temperature Sensation:" + RowMiddle + String(dhtTempFeel) + " Celcius." + RowEnd;
+	HTML += RowStart + "Dew Point:" + RowMiddle + String(dhtDewPoint) + " Celcius." + RowEnd;
+	HTML += RowStart + "Confort Perception:" + RowMiddle + strConfort(dhtComfort) + "." + RowEnd;
+	HTML += RowStart + "Hum:" + RowMiddle + String(dhtHum) + " %H." + RowEnd;
+	HTML += RowStart + "Press:" + RowMiddle + String(bmpPress) + " hPa." + RowEnd;
+	HTML += RowStart + "Battery:" + RowMiddle + String(batteryV) + " V." + RowEnd;
+	HTML += RowStart + "Light:" + RowMiddle + String(bhLight) + " lux." + RowEnd;
+	
 	HTML += "</table><br/>";
 	HTML += "<a href='up'>Upgradear el firmware</a>";
+	HTML += "</div>";
 	HTML += htmlTail;
 
 	// add it
 	server.sendHeader("Connection", "close");
 	server.send(200, "text/html", HTML);
+
+	// arm the wake timer
+	wakeArm();
 }
 
 void handleUpdate() {
@@ -387,7 +482,7 @@ void handleUpdate() {
 
 	// craft the index page
 	String HTML = htmlHeadStatic;
-	HTML += "<form method='POST' action='/update' enctype='multipart/form-data'><input type='file' name='update'><input type='submit' value='Update'></form>";
+	HTML += "<div align='center'><form method='POST' action='/update' enctype='multipart/form-data'><input type='file' name='update'><input type='submit' value='Update'></form></div>";
 	HTML += htmlTail;
 
 	// add it
@@ -396,8 +491,6 @@ void handleUpdate() {
 }
 
 void handlePostResult() {
-	server.sendHeader("Connection", "close");
-	server.send(200, "text/plain", (Update.hasError()) ? "FAIL" : "OK");
 	ESP.restart();
 }
 
@@ -417,6 +510,15 @@ void handlePostProcess() {
 		}
 	} else if (upload.status == UPLOAD_FILE_END) {
 		if (Update.end(true)) { //true to set the size to the current progress
+			// prepare final msg
+			HTML  = htmlHeadStatic;
+			HTML += "<p>Ready! click <a href='http://";
+			HTML += host;
+			HTML += ".local'>here</a> to go back to start page</p>";
+			
+			server.sendHeader("Connection", "close");
+			server.send(200, "text/html", (Update.hasError()) ? "<b>FAIL! need to upgrade via serial</b>" : HTML);
+
 			Serial.printf("Update Success: %u\nRebooting...\n", upload.totalSize);
 		} else {
 			Update.printError(Serial);
@@ -444,34 +546,61 @@ void handleNotFound() {
 	server.send(404, "text/plain", message);
 }
 
+void WiFiOn() {
+	WiFi.forceSleepWake();
+	wifiOn = true;
+}
+
+void WiFiOff() {
+	WiFi.forceSleepBegin();
+	wifiOn = false;
+}
+
+void checkWake() {
+	// Use WiFiClient class to create TCP connections
+  if (client.connect(wakeHost, wakeHostPort)) {
+		// user feedback
+    client.println(String("Wake triggered for the next ") + String(WAKE_TIMER) + String(" minutes."));
+		client.flush();
+
+		// close client
+		client.stop();
+		
+		// ok, arm trigger
+		wakeArm();
+  }
+} 
+
 void forceConnect() {
+	// enable Wifi
+	WiFiOn();
+
+	// wifi config
+	WiFi.mode(WIFI_STA);
+	WiFi.begin(WIFI_SSID, WIFI_PASS);
+	WiFi.hostname(host);
+	WiFi.config(staticIP, gateway, subnet);
+	WiFi.setSleepMode(WIFI_MODEM_SLEEP); // WIFI_LIGHT_SLEEP vs WIFI_MODEM_SLEEP
+	WiFi.setAutoReconnect(true);
+
 	if (WiFi.waitForConnectResult() != WL_CONNECTED) {
 		// user feedback
-		Serial.println("Connecting to WIFI");
-
-		WiFi.disconnect();
-		WiFi.hostname(host); // DHCP Hostname 
-		WiFi.config(staticIP, subnet, gateway, dns);
-		WiFi.mode(WIFI_STA); // WIFI_STA: WiFi mode station (connect to wifi router only)
-		WiFi.begin(WIFI_SSID, WIFI_PASS);
-
-		// sleep the wifi modem
-		/*** 
-		 * auto light sleep: LIGHT_SLEEP_T (2mA)
-		 * modem sleep: NONE_SLEEP_T (18 mA)
-		*/
-		wifi_set_sleep_type(LIGHT_SLEEP_T);
+		Serial.println("Not Connected to Wifi...");
+	} else {
+		Serial.print("Connected to WIFI... ");
+		Serial.println(WiFi.localIP());
 	}
 }
 
 void OTASetup() {
+	// start by connecting to wifi
 	forceConnect();
 
 	// if not connected reboot.
 	if (WiFi.status() != WL_CONNECTED) {
 		// message, wait 5 seconds and reboot
-		Serial.println("No connection wait 5 seconds and reboot...");
-		delay(5000);
+		Serial.println("No connection wait 30 seconds and reboot...");
+		delay(30000);
 		ESP.reset();
 	}
 
@@ -502,10 +631,47 @@ void OTASetup() {
 	Serial.printf("Ready! Open http://%s.local in your browser\n", host);
 }
 
-void setup() {
-	// initial pause
-	delay(1000);
+void doitall() {
+	// measure
+	takeSamples();
 
+	// check for connectivity
+	forceConnect();
+
+	// send influx data
+	infxSendData();
+
+	// check for wake flag
+	checkWake();
+
+	// wifi off
+	if (millis() > wakeExpireAt ) {
+		WiFiOff();
+		#ifdef DEBUG
+		Serial.println("WiFi Off...");
+		#endif
+	}
+
+	// serial debug
+	#ifdef DEBUG
+	serialDebug();
+	#endif
+}
+
+void setup() {
+	// if debug set verbose debug
+	#ifdef DEBUG
+	Serial.setDebugOutput(true);
+	#endif // DEBUG
+
+	// wifi off from start
+	WiFiOff();
+
+	#ifdef DEBUG
+	// initial pause
+	delay(2000);
+	#endif // DEBUG
+	
 	// serial
 	Serial.begin(115200);
 	Serial.println(" ");
@@ -516,19 +682,15 @@ void setup() {
 	Wire.begin();
 
 	// BMP180, checks the sensor ID and reads the calibration parameters.  
-	if (!bmp.begin()) {
-		while (1) {
-			Serial.println("BMP180 begin failed. check your BMP180 Interface and I2C Address.");
-			delay(5000);
-		}
+	while (!bmp.begin()) {
+		Serial.println("BMP180 begin failed. check your BMP180 Interface and I2C Address.");
+		delay(5000);
 	}
 
 	// check for the device (SDA - D2, SCL - D1)
 	while (BH1750.begin(D2, D1) != true) {
-		while (1) {
-			Serial.println("BH1705 begin failed. check your BH1705 Interface and I2C Address.");;
-			delay(5000);
-		}
+		Serial.println("BH1705 begin failed. check your BH1705 Interface and I2C Address.");;
+		delay(5000);
 	}
 
 	// DHT11
@@ -540,38 +702,38 @@ void setup() {
 	influx.debug = true;
 	#endif
 
+	// initial measurement to populate values
+	takeSamples();
+
 	// OTA 
 	OTASetup();
-
-	// initial measurement to populate values
-	measure();
 }
 
 void loop() {
-	// timing
-	if ((millis() - lastmillis) / 1000 > INTERVAL) {
-		// reset timer
-		lastmillis = millis();
+	/****** DO NOT ******
+	 * use the ticker from esp lib, it wil result in a crash!!!
+	 * then if we ran for 50+ days the millis trick will fail
+	 * so... we will reset it after 49 days of uptime
+	 ********************/
 
-		// check for connectivity
-		forceConnect();
+	// failsafe trigger
+	if (millis() > DAY49) { ESP.reset(); }
 
-		// measure
-		measure();
+	// date read, process and send, with a timer
+	if ((millis() - lastTime) / 1000 > INTERVAL) { 
+		// reset last Time
+		lastTime = millis();
 
-		// send influx data
-		infxSendData();
-
-		// serial debug
-		#ifdef DEBUG
-		serialDebug();
-		#endif
+		// do the job
+		doitall();
 	}
 
-	// OTA
-	server.handleClient();
+	// process msDNS & web client while connected
+	if (wifiOn) {
+		server.handleClient();
   	MDNS.update();
+	}
 
 	// delay to trigger the sleep
-	delay(1); 	
+	delay(1);
 }
