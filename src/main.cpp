@@ -1,7 +1,7 @@
 // Pavel Milanes
 // DIY weather station reporting directly via influx
 
- /**********************************************
+/**********************************************
  *  Users configs here
  ************************************************/
 
@@ -10,11 +10,11 @@
 
 // Arduino
 #include <Arduino.h>
-#define VERSION					"v0.5.5"	// version
-#define WIFI_SSID       "Opi"		// Wifi user
-#define WIFI_PASS       "Xilantro"	// Wifi passwd
-#define INFLUXDB_HOST   "10.42.1.1"	// influx server
-#define INFLUXDB_DBNAME "test"		// name of the influxdb database to insert data
+#define VERSION "v0.5.8"		  // version
+#define WIFI_SSID "Opi"			  // Wifi user
+#define WIFI_PASS "Xilantro"	  // Wifi passwd
+#define INFLUXDB_HOST "10.42.1.1" // influx server
+#define INFLUXDB_DBNAME "test"	  // name of the influxdb database to insert data
 
 // Wifi related functions
 #include <ESP8266WiFi.h>
@@ -24,10 +24,10 @@
 WiFiClient client;
 
 // WIFI static IP settings
-IPAddress staticIP(10, 42, 1, 2);		// ESP8266 static ip
-IPAddress gateway(10, 42, 1, 1);		//IP Address of your WiFi Router (Gateway)
+IPAddress staticIP(10, 42, 1, 2);	// ESP8266 static ip
+IPAddress gateway(10, 42, 1, 1);	//IP Address of your WiFi Router (Gateway)
 IPAddress subnet(255, 255, 255, 0); //Subnet mask
-const char* host = "meteo";
+const char *host = "meteo";
 
 /******* Web listen trick
  * 
@@ -56,12 +56,12 @@ const char* host = "meteo";
  * This can be also accomplished by opening the web on the 30 seconds
  * following a restart of the MCU
  ***************************************************************/
-const char* wakeHost = "10.42.1.1";
+const char *wakeHost = "10.42.1.1";
 int wakeHostPort = 8266;
-#define WAKE_TIMER 1	// minute(s)
-unsigned long wakeExpireAt = millis();
-bool wifiOn = false;	// wifi state (start off) until the first read of the sensors and send
-bool stayAlive = false;
+#define WAKE_TIMER 1 // minute(s)
+unsigned long wakeExpireAt = millis() + WAKE_TIMER * 60000 + 500;
+bool wifiOn = false; // wifi state (start off) until the first read of the sensors and send
+bool stayAlive = true;
 
 // OTA related configs
 #include <ESP8266WebServer.h>
@@ -71,9 +71,9 @@ bool stayAlive = false;
 ESP8266WebServer server(80);
 
 // Web auth
-const char* www_username = "admin";
-const char* www_password = "esp8266";
-const char* www_realm = "Restricted area";
+const char *www_username = "admin";
+const char *www_password = "esp8266";
+const char *www_realm = "Restricted area";
 String authFailResponse = "Authentication Failed";
 
 // some HTML vars
@@ -108,7 +108,7 @@ float dhtHum = 0;
 float dhtTemp = 0;
 float dhtTempFeel = 0;
 float dhtDewPoint = 0;
-int   dhtComfort = 0;
+int dhtComfort = 0;
 float bhLight = 0;
 
 // Analog 5 voltage as measured on a VCC pin on the arduno pro-mini
@@ -122,17 +122,17 @@ float bhLight = 0;
 int adc_max_sampling;
 int battery = 0;
 int lm35 = 0;
-int current = 0;
+int rain = 0;
 int windir = 0;
 
 // this ones are used as raw values
 int rainCount = 0;
 
-// masurements from the arduno pro-mini
+// masurements from the arduino pro-mini
 float batteryV = 0;
 float lm35Temp = 0;
 float windDir = 0;
-float batteryCurrent;
+float rainMeter = 0;
 
 // other
 int Lightnings = 0;
@@ -140,22 +140,25 @@ int WindSpeed = 0;
 float RainAmount = 0;
 
 // internal vars
-int INTERVAL = 180; // seconds between intervals
+int INTERVAL = 150; // seconds between intervals
 unsigned long lastTime = millis();
 
 /*****************************************************************/
 
-void goneAsleep() {
+void goneAsleep()
+{
 	Serial.print("Gone asleep for ");
 	Serial.print(INTERVAL);
 	Serial.print(" seconds");
-	
+
 	ESP.deepSleep(INTERVAL * 1000000);
 }
 
-String strConfort(int cfindex) {
+String strConfort(int cfindex)
+{
 	String result = "";
-	switch (cfindex)	{
+	switch (cfindex)
+	{
 	case 0:
 		result = "Dry";
 		break;
@@ -189,13 +192,15 @@ String strConfort(int cfindex) {
 	return result;
 }
 
-void bmp180Read() {
+void bmp180Read()
+{
 	int status;
 
 	// You need to measure temp first, it will return 0 on fail or
 	// ms to wait to get the temp
 	status = bmp.startTemperature();
-	if (status != 0) {
+	if (status != 0)
+	{
 		// Wait for the measurement to complete:
 		delay(status);
 
@@ -206,17 +211,15 @@ void bmp180Read() {
 		// Note that the measurement is stored in the variable T.
 		// Function returns 1 if successful, 0 if failure.
 		status = bmp.getTemperature(T);
-		if (status != 0) {
-			// ok, good temp measurement
-			// apply correction
-			T -= 6.0;
-			
+		if (status != 0)
+		{
 			// Start a bmp180 measurement:
 			// The parameter is the oversampling setting, from 0 to 3 (highest res, longest wait).
 			// If request is successful, the number of ms to wait is returned.
 			// If request is unsuccessful, 0 is returned.
 			status = bmp.startPressure(3);
-			if (status != 0) {
+			if (status != 0)
+			{
 				// Wait for the measurement to complete:
 				delay(status);
 
@@ -228,35 +231,41 @@ void bmp180Read() {
 				// Note also that the function requires the previous temperature measurement (T).
 				// (If temperature is stable, you can do one temperature measurement for a number of bmp180 measurements.)
 				// Function returns 1 if successful, 0 if failure.
-				status = bmp.getPressure(P,T);
-				if (status != 0) {
+				status = bmp.getPressure(P, T);
+				if (status != 0)
+				{
 					// set the external vars
 					bmpPress = P;
-					bmpTemp = T;
+					bmpTemp = T -= 5.6; // apply correction
 				}
 			}
 		}
 	}
 }
 
-void dhtRead() {
+void dhtRead()
+{
 	// DHT measurements if status is ok
-	if (dht.getStatusString() == "OK")  {
+	if (dht.getStatusString() == "OK")
+	{
 		dhtHum = dht.getHumidity();
 		dhtTemp = dht.getTemperature() - 1.4;
 		dhtTempFeel = dht.computeHeatIndex(dhtTemp, dhtHum, false);
 		dhtDewPoint = dht.computeDewPoint(dhtTemp, dhtHum, false);
 		dhtComfort = dht.computePerception(dhtTemp, dhtHum, false);
-	} else {
+	}
+	else
+	{
 		Serial.println("DHT sensor is not ready, reads time to short?");
 	}
 }
 
-void bhRead() {
+void bhRead()
+{
 	// read the values for the light sensor
 	// the sensor has a screen and the calculated attenuation
 	// is compensated here:
-	// 
+	//
 	// (2324,2+2365,8+2366,7+2354,2) ÷ 4 = 2352,725
 	// (256,7+252,5+258,3+257,5) ÷ 4     = 256,25
 	//
@@ -264,46 +273,40 @@ void bhRead() {
 	bhLight = BH1750.readLightLevel() * 9.181365854;
 }
 
-float percent(int val) {
+float percent(int val)
+{
 	return (float(val) / adc_max_sampling);
 }
 
-float calcCurrent(int val) {
-	// calc the voltage diff against the center
-	float vdiff = percent((val - (adc_max_sampling / 2)) * V5);
-
-	// calc the current associated
-	float curr = (vdiff / (adc_max_sampling / 2)) * CURRSCALE;
-
-	// return
-	return curr;
-}
-
-void updateValuesFromArduino() {
+void updateValuesFromArduino()
+{
 	// update ADC values (volt scale is applied before percent to increase accuracy)
 	batteryV = percent(battery * V5) * VOLTSCALE;
-	lm35Temp = percent(lm35 * V5 * 100) - 0.2 ;
+	lm35Temp = percent(lm35 * V5 * 100) - 1.0;
 	windDir = windir;
-	batteryCurrent = calcCurrent(current);
+	rainMeter = percent(rain * 100);
 
 	// non ADc values
 	RainAmount = rainCount * RAINMM;
 }
 
-int getValue(){
-  // read two bytes from the I2C MSBF and return it as a word
-  int reading;
-  reading = int(Wire.read()) << 8;
-  reading |= Wire.read();
-  return reading;
+int getValue()
+{
+	// read two bytes from the I2C MSBF and return it as a word
+	int reading;
+	reading = int(Wire.read()) << 8;
+	reading |= Wire.read();
+	return reading;
 }
 
-void getI2CData() {
+void getI2CData()
+{
 	// size of the data to get
 	byte count = 16;
 
 	// empty the buffer for the next reading
-	while(Wire.available()) {
+	while (Wire.available())
+	{
 		byte discard = Wire.read();
 	}
 
@@ -311,14 +314,15 @@ void getI2CData() {
 	byte available = Wire.requestFrom(0x21, count);
 
 	// check
-	if (available == count) {
+	if (available == count)
+	{
 		// will be used to calc
 		adc_max_sampling = getValue();
 		battery = getValue();
 		lm35 = getValue();
-		current = getValue();
+		rain = getValue();
 		windir = getValue();
-		
+
 		// will be used
 		Lightnings = getValue();
 		WindSpeed = getValue();
@@ -329,7 +333,8 @@ void getI2CData() {
 	updateValuesFromArduino();
 }
 
-void takeSamples() {
+void takeSamples()
+{
 	// read temp an press
 	bmp180Read();
 
@@ -343,7 +348,8 @@ void takeSamples() {
 	getI2CData();
 }
 
-InfluxData measure(char* rowName, float val, char *device, char *sensor, char *place, char *comm) {
+InfluxData measure(char *rowName, float val, char *device, char *sensor, char *place, char *comm)
+{
 	InfluxData row(rowName);
 	row.addTag("device", device);
 	row.addTag("sensor", sensor);
@@ -353,8 +359,9 @@ InfluxData measure(char* rowName, float val, char *device, char *sensor, char *p
 	return row;
 }
 
-void infxSendData() {
-	// create measurements
+void infxSendData()
+{
+	// create measurements, WARNING  no spaces on data
 	InfluxData m0 = measure("temperature", bmpTemp, "WX_stat", "BMP180", "Techo", "real");
 	influx.prepare(m0);
 
@@ -379,45 +386,51 @@ void infxSendData() {
 	InfluxData m7 = measure("temperature", lm35Temp, "WX_stat", "LM35", "Techo", "feel");
 	influx.prepare(m7);
 
-	InfluxData m8 = measure("lightnings", Lightnings, "WX_stat", "lightnings", "Techo", "real");
-	influx.prepare(m8);
+	InfluxData m00 = measure("lightnings", Lightnings, "WX_stat", "lightnings", "Techo", "real");
+	influx.prepare(m00);
 
-	InfluxData m9 = measure("windSpeed", WindSpeed, "WX_stat", "WindSpeed", "Techo", "real");
-	influx.prepare(m9);
+	InfluxData m01 = measure("windSpeed", WindSpeed, "WX_stat", "WindSpeed", "Techo", "real");
+	influx.prepare(m01);
 
-	InfluxData mA = measure("windDir", windDir, "WX_stat", "WindDirection", "Techo", "real");
-	influx.prepare(mA);
+	InfluxData m02 = measure("windDir", windDir, "WX_stat", "WindDirection", "Techo", "real");
+	influx.prepare(m02);
 
-	InfluxData mB = measure("rainAmount", RainAmount, "WX_stat", "RainAmount", "Techo", "real");
-	influx.prepare(mB);
+	InfluxData m03 = measure("rainAmount", RainAmount, "WX_stat", "RainAmount", "Techo", "real");
+	influx.prepare(m03);
 
-	InfluxData mC = measure("temperature", dhtDewPoint, "WX_stat", "DHT11", "Techo", "DewPoint");
-	influx.prepare(mC);
+	InfluxData m04 = measure("temperature", dhtDewPoint, "WX_stat", "DHT11", "Techo", "DewPoint");
+	influx.prepare(m04);
 
-	InfluxData mD = measure("confortRatio", dhtComfort, "WX_stat", "ConfortRatio", "Techo", "real");
-	influx.prepare(mD);
+	InfluxData m05 = measure("confortRatio", dhtComfort, "WX_stat", "ConfortRatio", "Techo", "real");
+	influx.prepare(m05);
 
-	InfluxData mE = measure("wifi_rssi", WiFi.RSSI(), "WX_stat", "WiFi_RSSI_LEVEL", "Techo", "real");
-	influx.prepare(mE);
+	InfluxData m06 = measure("wifi_rssi", WiFi.RSSI(), "WX_stat", "WiFi_RSSI_LEVEL", "Techo", "real");
+	influx.prepare(m06);
+
+	InfluxData m07 = measure("raining", rainMeter, "WX_stat", "RainDetector", "Techo", "real");
+	influx.prepare(m07);
 
 	// actual write & catch wifi errors
 	influx.write();
-
 }
 
 #ifdef DEBUG
-void serialDebug() {
+void serialDebug()
+{
 	static byte pcount = 11;
-	
+
 	// header every 10 reads
-	if (pcount >= 10){
+	if (pcount >= 10)
+	{
 		Serial.print("Temp (bmp/dht/LM35)(C)\tHum(%)\tPress(kPa)\tLight(%)\tBattery (v)");
 		Serial.println("\tWSpeed(%)\tRain(mm/s)\tLightning");
 		pcount = 1;
-	} else {
+	}
+	else
+	{
 		pcount++;
 	}
-	
+
 	// serial debug info
 	Serial.print(bmpTemp, 1);
 	Serial.print(" / ");
@@ -441,7 +454,8 @@ void serialDebug() {
 }
 #endif
 
-char *uptime() {
+char *uptime()
+{
 	unsigned long milli = millis();
 	static char _return[32];
 	unsigned long secs = milli / 1000, mins = secs / 60;
@@ -450,36 +464,40 @@ char *uptime() {
 	secs -= mins * 60;
 	mins -= hours * 60;
 	hours -= days * 24;
-	sprintf(_return,"Uptime %d days %2.2d:%2.2d:%2.2d.%3.3d", (byte)days, (byte)hours, (byte)mins, (byte)secs, (int)milli);
+	sprintf(_return, "Uptime %d days %2.2d:%2.2d:%2.2d.%3.3d", (byte)days, (byte)hours, (byte)mins, (byte)secs, (int)milli);
 	return _return;
 }
 
-void wakeArm() {
+void wakeArm()
+{
 	// arm the timer for the wake
-	wakeExpireAt = millis() + WAKE_TIMER * 1000 * 60;	// WAKE_TIMER minutes
+	wakeExpireAt = millis() + WAKE_TIMER * 1000 * 60; // WAKE_TIMER minutes
 	stayAlive = true;
 
-	#ifdef DEBUG
+#ifdef DEBUG
 	Serial.println("Wake trigger armed!");
-	#endif // DEBUG
+#endif // DEBUG
 }
 
-void checkWake() {
+void checkWake()
+{
 	// Use WiFiClient class to create TCP connections
-  if (client.connect(wakeHost, wakeHostPort)) {
+	if (client.connect(wakeHost, wakeHostPort))
+	{
 		// user feedback
-    client.println(String("Wake triggered for the next ") + String(WAKE_TIMER) + String(" minutes."));
+		client.println(String("Wake triggered for the next ") + String(WAKE_TIMER) + String(" minutes."));
 		client.flush();
 
 		// close client
 		client.stop();
-		
+
 		// ok, arm trigger
 		wakeArm();
-  }
-} 
+	}
+}
 
-void handleIndex() {
+void handleIndex()
+{
 	// String table helpers
 	const String RowStart = "<tr><td><p align='right'><b>";
 	const String RowMiddle = "</b></p></td><td><p align='left'>";
@@ -487,12 +505,16 @@ void handleIndex() {
 	// craft the index page
 	String HTML = htmlHeadRefresh;
 
+	byte min = byte(INTERVAL / 60);
+	byte sec = byte(INTERVAL % 60);
+
 	HTML += "<div align='center'>";
 	HTML += "<h1>Actual WX Conditions</h1><hr><br/>";
-	HTML += "<p align='center'>"+ String(uptime()) + "</br>";
-	HTML += "<i>Sampling each "+ String(int(INTERVAL/60)) + " minute(s)</i>";
+	HTML += "<p align='center'>" + String(uptime()) + "</br>";
+	HTML += "<i>Sampling each " + String(min) + ":" + String(sec) + " minute(s)</i>";
 
-	if (batteryV < LOWBATT) {
+	if (batteryV < LOWBATT)
+	{
 		HTML += "</br><div color='red'> <b>LOW BATTERY!</b></div>";
 	}
 
@@ -507,16 +529,17 @@ void handleIndex() {
 	HTML += RowStart + "Press:" + RowMiddle + String(bmpPress) + " hPa" + RowEnd;
 	HTML += RowStart + "Battery:" + RowMiddle + String(batteryV) + " V" + RowEnd;
 	HTML += RowStart + "Light:" + RowMiddle + String(bhLight) + " lux" + RowEnd;
+	HTML += RowStart + "Is raining:" + RowMiddle + String(rainMeter) + " %" + RowEnd;
 	HTML += RowStart + "WiFi AP signal level:" + RowMiddle + String(WiFi.RSSI()) + " dBm" + RowEnd;
 
 	HTML += "</table><br/>";
 
-	HTML += "<p><a href='up'>Firmware Upgrade</a></p>";
-	
+	HTML += "<p>Version: " + String(VERSION) + "&nbsp;<a href='up'>Firmware Upgrade</a></p>";
+
 	HTML += "<hr>";
-	
+
 	HTML += "<div><i>DIY meteo station by @pavelmc, CO7WT</i></div>";
-	
+
 	HTML += "</div>";
 	HTML += htmlTail;
 
@@ -528,11 +551,13 @@ void handleIndex() {
 	wakeArm();
 }
 
-void handleUpdate() {
+void handleUpdate()
+{
 	// auth for this one
-	if (!server.authenticate(www_username, www_password)) {
-    	return server.requestAuthentication(DIGEST_AUTH, www_realm, authFailResponse);
-    }
+	if (!server.authenticate(www_username, www_password))
+	{
+		return server.requestAuthentication(DIGEST_AUTH, www_realm, authFailResponse);
+	}
 
 	// craft the index page
 	String HTML = htmlHeadStatic;
@@ -547,46 +572,59 @@ void handleUpdate() {
 	wakeArm();
 }
 
-void handlePostResult() {
+void handlePostResult()
+{
 	ESP.restart();
 }
 
-void handlePostProcess() {
-	HTTPUpload& upload = server.upload();
-	if (upload.status == UPLOAD_FILE_START) {
+void handlePostProcess()
+{
+	HTTPUpload &upload = server.upload();
+	if (upload.status == UPLOAD_FILE_START)
+	{
 		Serial.setDebugOutput(true);
 		WiFiUDP::stopAll();
 		Serial.printf("Update: %s\n", upload.filename.c_str());
 		uint32_t maxSketchSpace = (ESP.getFreeSketchSpace() - 0x1000) & 0xFFFFF000;
-		if (!Update.begin(maxSketchSpace)) { //start with max available size
+		if (!Update.begin(maxSketchSpace))
+		{ //start with max available size
 			Update.printError(Serial);
 		}
-	} else if (upload.status == UPLOAD_FILE_WRITE) {
-		if (Update.write(upload.buf, upload.currentSize) != upload.currentSize) {
+	}
+	else if (upload.status == UPLOAD_FILE_WRITE)
+	{
+		if (Update.write(upload.buf, upload.currentSize) != upload.currentSize)
+		{
 			Update.printError(Serial);
 		}
-	} else if (upload.status == UPLOAD_FILE_END) {
-		if (Update.end(true)) { //true to set the size to the current progress
+	}
+	else if (upload.status == UPLOAD_FILE_END)
+	{
+		if (Update.end(true))
+		{ //true to set the size to the current progress
 			// prepare final msg
-			HTML  = htmlHeadStatic;
+			HTML = htmlHeadStatic;
 			HTML += "<p>Ready! click <a href='http://";
 			HTML += host;
 			HTML += ".local'>here</a> to go back to start page</p>";
-			
+
 			server.sendHeader("Connection", "close");
 			server.send(200, "text/html", (Update.hasError()) ? "<b>FAIL! need to upgrade via serial</b>" : HTML);
 
 			Serial.printf("Update Success: %u\nRebooting...\n", upload.totalSize);
-		} else {
+		}
+		else
+		{
 			Update.printError(Serial);
 		}
 		Serial.setDebugOutput(false);
 	}
-	
+
 	yield();
 }
 
-void handleNotFound() {
+void handleNotFound()
+{
 	String message = "File Not Found\n\n";
 	message += "URI: ";
 	message += server.uri();
@@ -596,25 +634,29 @@ void handleNotFound() {
 	message += server.args();
 	message += "\n";
 
-	for (uint8_t i = 0; i < server.args(); i++) {
+	for (uint8_t i = 0; i < server.args(); i++)
+	{
 		message += " " + server.argName(i) + ": " + server.arg(i) + "\n";
 	}
 
 	server.send(404, "text/plain", message);
 }
 
-void WiFiOn() {
+void WiFiOn()
+{
 	WiFi.forceSleepWake();
 	wifiOn = true;
 }
 
-void WiFiOff() {
+void WiFiOff()
+{
 	WiFi.forceSleepBegin();
 	wifiOn = false;
 	stayAlive = false;
 }
 
-bool forceConnect() {
+bool forceConnect()
+{
 	// enable Wifi
 	WiFiOn();
 
@@ -626,34 +668,39 @@ bool forceConnect() {
 	WiFi.setSleepMode(WIFI_MODEM_SLEEP); // WIFI_LIGHT_SLEEP vs WIFI_MODEM_SLEEP
 	WiFi.setAutoReconnect(true);
 
-	if (WiFi.waitForConnectResult() != WL_CONNECTED) {
-		// user feedback
-		#ifdef DEBUG
+	if (WiFi.waitForConnectResult() != WL_CONNECTED)
+	{
+// user feedback
+#ifdef DEBUG
 		Serial.println("Not Connected to Wifi...");
 		return false;
-		#else
+#else
 		goneAsleep();
-		#endif
-	} else {
-		#ifdef DEBUG
+#endif
+	}
+	else
+	{
+#ifdef DEBUG
 		Serial.print("Connected to WIFI, IP: ");
 		Serial.println(WiFi.localIP());
-		#endif
+#endif
 		return true;
 	}
 }
 
-void OTASetup() {
+void OTASetup()
+{
 	// if not connected reboot/sleep
-	if (WiFi.status() != WL_CONNECTED) {
-		// message, wait 5 seconds and reboot
-		#ifdef DEBUG
+	if (WiFi.status() != WL_CONNECTED)
+	{
+// message, wait 5 seconds and reboot
+#ifdef DEBUG
 		Serial.println("No connection wait 30 seconds and reboot...");
 		delay(30000);
 		ESP.reset();
-		#else
+#else
 		goneAsleep();
-		#endif
+#endif
 	}
 
 	// define some of the HTML vars
@@ -683,58 +730,66 @@ void OTASetup() {
 	Serial.printf("Ready! Open http://%s.local in your browser\n", host);
 }
 
-bool battisok() {
+bool battisok()
+{
 	// inverse logic
-	if (batteryV < LOWBATT and batteryV > 1.0) {
+	if (batteryV < LOWBATT and batteryV > 1.0)
+	{
 		return false;
-	} else {
+	}
+	else
+	{
 		return true;
 	}
 }
 
-void setup() {
-	// if debug set verbose debug
-	#ifdef DEBUG
+void setup()
+{
+// if debug set verbose debug
+#ifdef DEBUG
 	Serial.setDebugOutput(true);
-	#endif // DEBUG
+#endif // DEBUG
 
 	// wifi off from start
 	WiFiOff();
 
-	#ifdef DEBUG
+#ifdef DEBUG
 	// initial pause
 	delay(2000);
-	#endif // DEBUG
-	
+#endif // DEBUG
+
 	// serial
 	Serial.begin(115200);
 	Serial.println(" ");
-	#ifdef DEBUG
+#ifdef DEBUG
 	Serial.print("Meteo Station ");
 	Serial.println(VERSION);
-	#endif // DEBUG
+#endif // DEBUG
 
 	// Start I2C comms
 	Wire.begin();
 
-	// BMP180, checks the sensor ID and reads the calibration parameters.  
-	while (!bmp.begin()) {
+	// BMP180, checks the sensor ID and reads the calibration parameters.
+	while (!bmp.begin())
+	{
 		Serial.println("BMP180 begin failed. check your BMP180 Interface and I2C Address.");
-		#ifdef DEBUG
+#ifdef DEBUG
 		delay(5000);
-		#else
+#else
 		goneAsleep();
-		#endif
+#endif
 	}
 
 	// check for the device (SDA - D2, SCL - D1)
-	while (BH1750.begin(D2, D1) != true) {
-		Serial.println("BH1705 begin failed. check your BH1705 Interface and I2C Address.");;
-		#ifdef DEBUG
+	while (BH1750.begin(D2, D1) != true)
+	{
+		Serial.println("BH1705 begin failed. check your BH1705 Interface and I2C Address.");
+		;
+#ifdef DEBUG
 		delay(5000);
-		#else
+#else
 		goneAsleep();
-		#endif
+#endif
 	}
 
 	// DHT11
@@ -742,51 +797,58 @@ void setup() {
 
 	// influx config here
 	influx.setDb(INFLUXDB_DBNAME);
-	#ifdef INFLUXDEBUG
+#ifdef INFLUXDEBUG
 	influx.debug = true;
-	#endif
+#endif
 
-	/****** ACTION GOES  HERE ***************/
+/****** ACTION GOES  HERE ***************/
 
-	// initial measurement to populate values
-	#ifdef DEBUG
+// initial measurement to populate values
+#ifdef DEBUG
 	Serial.println("Reading sensors...");
-	#endif
+#endif
 	takeSamples();
 
 	// save power if on critical situation
-	if (battisok()) {
-		#ifdef DEBUG
+	if (battisok())
+	{
+#ifdef DEBUG
 		Serial.println("Battery is OK...");
-		#endif
-		
+#endif
+
 		// connect to wifi or die
 		forceConnect();
 
 		// send influx data
 		infxSendData();
 
-		#ifdef DEBUG
+#ifdef DEBUG
 		Serial.println("Data sent to server...");
-		#endif
+#endif
 
 		// check for wake flag
 		checkWake();
-	} else {
+	}
+	else
+	{
 		Serial.println("Battery is LOW, not connecting to wifi...");
 	}
 
-	if (stayAlive) {
-		// OTA 
+	if (stayAlive)
+	{
+		// OTA
 		OTASetup();
-	} else {
+	}
+	else
+	{
 		goneAsleep();
 	}
 }
 
-void loop() {
+void loop()
+{
 	// loop is only reached if "stayAlive"  is true
-	
+
 	// delay to trigger the light sleep in wifi
 	delay(1);
 
@@ -795,29 +857,31 @@ void loop() {
 	MDNS.update();
 
 	// update values from the sensors at 10 seconds pace & send it to the server
-	if (millis() - lastTime > 10000) {
+	if (millis() - lastTime > 10000)
+	{
 		// reset timer
 		lastTime = millis();
 
 		// read sensors data
 		takeSamples();
 
-		// debug serial data
-		#ifdef DEBUG
+// debug serial data
+#ifdef DEBUG
 		serialDebug();
-		#endif
+#endif
 
 		// influx send data
 		infxSendData();
 
-		// user feedback
-		#ifdef DEBUG
+// user feedback
+#ifdef DEBUG
 		Serial.println("Sensor data updated & uploaded");
-		#endif
+#endif
 	}
 
 	// check if it's time to gone off
-	if (millis() > wakeExpireAt) {
+	if (millis() > wakeExpireAt)
+	{
 		goneAsleep();
 	}
 }
